@@ -9,7 +9,7 @@ from aiohttp import web
 from discord.ext import commands, tasks
 
 from db import Database
-from scraper import fetch_feed_entries, scrape_upvotes
+from scraper import fetch_feed_entries
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,8 +25,8 @@ def load_config(path=CONFIG_PATH):
 config = load_config()
 BOT_TOKEN = os.environ.get("DISCORD_TOKEN") or config.get("discord_token")
 FEED_URL = config.get("rss_url")
-POLL_INTERVAL = config.get("poll_interval_seconds", 300)
-COOLDOWN = config.get("cooldown_seconds", 3600)
+POLL_INTERVAL = config.get("poll_interval_seconds", 60)
+COOLDOWN = config.get("cooldown_seconds", 600)
 NOTIFY_CHANNEL_ID = os.environ.get("NOTIFY_CHANNEL_ID") or config.get("notify_channel_id")
 WEB_PORT = int(os.environ.get("WEB_PORT") or config.get("web_port", 8000))
 
@@ -105,6 +105,8 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', WEB_PORT)
     await site.start()
     logger.info(f"Test HTTP server running on port {WEB_PORT}")
+    logger.info(f"Started with FEED_URL={FEED_URL}, POLL_INTERVAL={POLL_INTERVAL}s, COOLDOWN={COOLDOWN}s, NOTIFY_CHANNEL_ID={NOTIFY_CHANNEL_ID}")
+    
     # keep running
     try:
         while True:
@@ -116,32 +118,41 @@ async def start_web_server():
 
 @tasks.loop(seconds=POLL_INTERVAL)
 async def poll_feed():
-    logger.debug("Polling feed...")
+    logger.info("Polling feed at time %f", asyncio.get_event_loop().time())
     try:
         entries = await fetch_feed_entries(FEED_URL)
         for entry in entries:
-            entry_id = entry.get("id") or entry.get("link")
+            entry_id = (
+                entry.get("id") or
+                entry.get("guid")
+            )
             if not entry_id:
                 continue
+
             already = await bot.db.is_seen(entry_id)
             if already:
                 continue
-            await bot.db.mark_seen(entry_id)
 
             title = entry.get("title", "")
             link = entry.get("link")
             summary = entry.get("summary", "")
 
-            upvotes = None
-            if link:
-                try:
-                    upvotes = await scrape_upvotes(link)
-                except Exception:
-                    upvotes = None
+            # ✅ FIX 1: get upvotes directly from feed (no scraping)
+            upvotes = (
+                entry.get("ozb:vote-pos")
+                or entry.get("vote-pos")
+                or entry.get("votes")
+                or 0
+            )
+
+            try:
+                upvotes = int(upvotes)
+            except Exception:
+                upvotes = 0
 
             # record deal metadata/upvotes
             try:
-                await bot.db.upsert_deal(entry_id, title, link, upvotes or 0)
+                await bot.db.upsert_deal(entry_id, title, link, upvotes)
             except Exception:
                 logger.exception("Failed to upsert deal %s", entry_id)
 
@@ -153,12 +164,15 @@ async def poll_feed():
                 threshold = float(row[3] or 80)
                 target_type = row[4] or "user"
                 target_id = row[5] or owner_id
+
                 matched = False
+
                 # treat 'all' or '*' as match-all
                 if keyword.strip().lower() in ("*", "all"):
                     matched = True
                 else:
                     text = f"{title}\n{summary}"
+
                     if keyword.lower() in text.lower():
                         matched = True
                     elif fuzzy:
@@ -170,105 +184,118 @@ async def poll_feed():
                             matched = True
 
                 if not matched:
+                    logger.debug(f"No match for subscription {keyword} (fuzzy={fuzzy}, threshold={threshold}) on deal {entry_id} with title '{title}'")
                     continue
 
                 can = await bot.db.can_notify_target(target_type, target_id, entry_id, COOLDOWN)
                 if not can:
+                    logger.info(f"Skipping notification for {target_type}:{target_id} on deal {entry_id} due to cooldown")
                     continue
 
                 try:
                     msg = f"New OzBargain deal matched: **{title}**\n{link}\n"
-                    if upvotes is not None:
-                        msg += f"Upvotes: {upvotes}\n"
+                    msg += f"Upvotes: {upvotes}\n"
                     msg += f"Matched keyword: `{keyword}`"
+
                     if target_type == "user":
-                        # If NOTIFY_CHANNEL_ID is configured, send into that channel and mention the user
                         if NOTIFY_CHANNEL_ID:
                             try:
                                 ch_id = int(NOTIFY_CHANNEL_ID)
                                 ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
                                 await ch.send(f"<@{target_id}> {msg}")
+                                logger.info(f"Sent notification to channel {NOTIFY_CHANNEL_ID} mentioning user {target_id} for deal {entry_id}")
                             except Exception:
-                                # fallback to DM if channel send fails
                                 user = await bot.fetch_user(target_id)
                                 await user.send(msg)
+                                logger.info(f"Sent DM to user {target_id} for deal {entry_id}")
                         else:
                             user = await bot.fetch_user(target_id)
                             await user.send(msg)
+                            logger.info(f"Sent DM to user {target_id} for deal {entry_id}")
                     else:
                         ch = bot.get_channel(target_id) or await bot.fetch_channel(target_id)
                         await ch.send(msg)
+                        logger.info(f"Sent notification to channel {target_id} for deal {entry_id}")
+
                     await bot.db.record_notification_target(target_type, target_id, entry_id)
+
                 except Exception as e:
                     logger.exception("Failed to notify target %s:%s: %s", target_type, target_id, e)
 
+            # ✅ mark seen AFTER processing (safer)
+            await bot.db.mark_seen(entry_id)
+
     except Exception:
         logger.exception("Error while polling feed")
-
 
 # background task to check for popular deals (e.g., >=50 upvotes within configured window)
 @tasks.loop(seconds=POLL_INTERVAL)
 async def popular_deals_check():
     try:
         POPULAR_THRESHOLD = int(config.get("popular_upvote_threshold", 50))
-        POPULAR_WINDOW = int(config.get("popular_window_seconds", 1800))
-        deals = await bot.db.get_popular_deals(min_upvotes=POPULAR_THRESHOLD, within_seconds=POPULAR_WINDOW)
+        POPULAR_WINDOW = int(config.get("popular_window_seconds", 3600))
+
+        deals = await bot.db.get_popular_deals(
+            min_upvotes=POPULAR_THRESHOLD,
+            within_seconds=POPULAR_WINDOW
+        )
+
         if not deals:
             return
+
         subs = await bot.db.get_all_subscriptions()
+        seen_targets = set()
+
         for deal in deals:
             deal_id, title, url, first_seen_ts, last_upvotes, last_checked_ts = deal
-            text = f"{title}\n{url}\nUpvotes: {last_upvotes}\n"
-            # notify all matching subscriptions
+
             for row in subs:
-                owner_id = row[0]
-                keyword = row[1]
-                fuzzy = bool(row[2])
-                threshold = float(row[3] or 80)
                 target_type = row[4] or "user"
-                target_id = row[5] or owner_id
-                matched = False
-                # treat 'all' or '*' as match-all
-                if keyword.strip().lower() in ("*", "all"):
-                    matched = True
-                else:
-                    if keyword.lower() in text.lower():
-                        matched = True
-                    elif fuzzy:
-                        ratio = max(
-                            fuzz.ratio(keyword.lower(), title.lower()),
-                            fuzz.ratio(keyword.lower(), text.lower()),
-                        )
-                        if ratio >= threshold:
-                            matched = True
+                target_id = row[5] or row[0]
 
-                if not matched:
+                key = (target_type, target_id)
+                if key in seen_targets:
                     continue
+                seen_targets.add(key)
 
-                can = await bot.db.can_notify_target(target_type, target_id, deal_id, COOLDOWN)
+                can = await bot.db.can_notify_target(
+                    target_type, target_id, deal_id, COOLDOWN
+                )
                 if not can:
                     continue
 
                 try:
-                    msg = f"Popular OzBargain deal: **{title}**\n{url}\nUpvotes: {last_upvotes}\nMatched keyword: `{keyword}`"
+                    msg = (
+                        f"🔥 **Popular Deal Alert!**\n"
+                        f"{title}\n{url}\n"
+                        f"👍 {last_upvotes} upvotes\n"
+                        f"Take a look 👀"
+                    )
+
                     if target_type == "user":
                         if NOTIFY_CHANNEL_ID:
-                            try:
-                                ch_id = int(NOTIFY_CHANNEL_ID)
-                                ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
-                                await ch.send(f"<@{target_id}> {msg}")
-                            except Exception:
-                                user = await bot.fetch_user(target_id)
-                                await user.send(msg)
+                            ch = bot.get_channel(int(NOTIFY_CHANNEL_ID)) or await bot.fetch_channel(int(NOTIFY_CHANNEL_ID))
+                            await ch.send(f"<@{target_id}> {msg}")
+                            logger.info(f"Sent popular deal notification to channel {NOTIFY_CHANNEL_ID} mentioning user {target_id} for deal {deal_id}")
                         else:
                             user = await bot.fetch_user(target_id)
                             await user.send(msg)
+                            logger.info(f"Sent popular deal DM to user {target_id} for deal {deal_id}") 
                     else:
                         ch = bot.get_channel(target_id) or await bot.fetch_channel(target_id)
                         await ch.send(msg)
-                    await bot.db.record_notification_target(target_type, target_id, deal_id)
+                        logger.info(f"Sent popular deal notification to channel {target_id} for deal {deal_id}")
+
+                    await bot.db.record_notification_target(
+                        target_type, target_id, deal_id
+                    )
+
                 except Exception as e:
-                    logger.exception("Failed to notify for popular deal %s to %s:%s: %s", deal_id, target_type, target_id, e)
+                    logger.exception(
+                        "Failed to notify %s:%s: %s",
+                        target_type, target_id, e
+                    )
+
     except Exception:
         logger.exception("Error in popular_deals_check")
 
