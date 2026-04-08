@@ -1,0 +1,7 @@
+{
+  "discord_token": "YOUR_BOT_TOKEN_HERE",
+  "rss_url": "https://www.ozbargain.com.au/feed",
+  "poll_interval_seconds": 60,
+  "cooldown_seconds": 3600,
+  "db_path": "ozbargain.db"
+}

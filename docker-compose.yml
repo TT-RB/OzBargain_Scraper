@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ozbot
+      POSTGRES_PASSWORD: ozbotpass
+      POSTGRES_DB: ozbargain
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  bot:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DATABASE_URL: postgres://ozbot:ozbotpass@db:5432/ozbargain
+    volumes:
+      - ./:/app
+    restart: on-failure
+
+volumes:
+  db_data:
