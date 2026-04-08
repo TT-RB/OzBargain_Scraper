@@ -25,7 +25,7 @@ def load_config(path=CONFIG_PATH):
 config = load_config()
 BOT_TOKEN = os.environ.get("DISCORD_TOKEN") or config.get("discord_token")
 FEED_URL = config.get("rss_url")
-POLL_INTERVAL = config.get("poll_interval_seconds", 60)
+POLL_INTERVAL = config.get("poll_interval_seconds", 300)
 COOLDOWN = config.get("cooldown_seconds", 3600)
 NOTIFY_CHANNEL_ID = os.environ.get("NOTIFY_CHANNEL_ID") or config.get("notify_channel_id")
 WEB_PORT = int(os.environ.get("WEB_PORT") or config.get("web_port", 8000))
@@ -44,6 +44,12 @@ async def on_ready():
     await bot.db.init_db()
     if not poll_feed.is_running():
         poll_feed.start()
+    # start the popular checker if it's defined in this module
+    try:
+        if not popular_deals_check.is_running():
+            popular_deals_check.start()
+    except NameError:
+        logger.warning("popular_deals_check not defined; skipping popular checker start")
     # start HTTP test endpoint
     bot.web_task = asyncio.create_task(start_web_server())
 
@@ -133,6 +139,12 @@ async def poll_feed():
                 except Exception:
                     upvotes = None
 
+            # record deal metadata/upvotes
+            try:
+                await bot.db.upsert_deal(entry_id, title, link, upvotes or 0)
+            except Exception:
+                logger.exception("Failed to upsert deal %s", entry_id)
+
             subs = await bot.db.get_all_subscriptions()
             for row in subs:
                 owner_id = row[0]
@@ -142,16 +154,20 @@ async def poll_feed():
                 target_type = row[4] or "user"
                 target_id = row[5] or owner_id
                 matched = False
-                text = f"{title}\n{summary}"
-                if keyword.lower() in text.lower():
+                # treat 'all' or '*' as match-all
+                if keyword.strip().lower() in ("*", "all"):
                     matched = True
-                elif fuzzy:
-                    ratio = max(
-                        fuzz.ratio(keyword.lower(), title.lower()),
-                        fuzz.ratio(keyword.lower(), summary.lower()),
-                    )
-                    if ratio >= threshold:
+                else:
+                    text = f"{title}\n{summary}"
+                    if keyword.lower() in text.lower():
                         matched = True
+                    elif fuzzy:
+                        ratio = max(
+                            fuzz.ratio(keyword.lower(), title.lower()),
+                            fuzz.ratio(keyword.lower(), summary.lower()),
+                        )
+                        if ratio >= threshold:
+                            matched = True
 
                 if not matched:
                     continue
@@ -190,11 +206,98 @@ async def poll_feed():
         logger.exception("Error while polling feed")
 
 
+# background task to check for popular deals (e.g., >=50 upvotes within configured window)
+@tasks.loop(seconds=POLL_INTERVAL)
+async def popular_deals_check():
+    try:
+        POPULAR_THRESHOLD = int(config.get("popular_upvote_threshold", 50))
+        POPULAR_WINDOW = int(config.get("popular_window_seconds", 1800))
+        deals = await bot.db.get_popular_deals(min_upvotes=POPULAR_THRESHOLD, within_seconds=POPULAR_WINDOW)
+        if not deals:
+            return
+        subs = await bot.db.get_all_subscriptions()
+        for deal in deals:
+            deal_id, title, url, first_seen_ts, last_upvotes, last_checked_ts = deal
+            text = f"{title}\n{url}\nUpvotes: {last_upvotes}\n"
+            # notify all matching subscriptions
+            for row in subs:
+                owner_id = row[0]
+                keyword = row[1]
+                fuzzy = bool(row[2])
+                threshold = float(row[3] or 80)
+                target_type = row[4] or "user"
+                target_id = row[5] or owner_id
+                matched = False
+                # treat 'all' or '*' as match-all
+                if keyword.strip().lower() in ("*", "all"):
+                    matched = True
+                else:
+                    if keyword.lower() in text.lower():
+                        matched = True
+                    elif fuzzy:
+                        ratio = max(
+                            fuzz.ratio(keyword.lower(), title.lower()),
+                            fuzz.ratio(keyword.lower(), text.lower()),
+                        )
+                        if ratio >= threshold:
+                            matched = True
+
+                if not matched:
+                    continue
+
+                can = await bot.db.can_notify_target(target_type, target_id, deal_id, COOLDOWN)
+                if not can:
+                    continue
+
+                try:
+                    msg = f"Popular OzBargain deal: **{title}**\n{url}\nUpvotes: {last_upvotes}\nMatched keyword: `{keyword}`"
+                    if target_type == "user":
+                        if NOTIFY_CHANNEL_ID:
+                            try:
+                                ch_id = int(NOTIFY_CHANNEL_ID)
+                                ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
+                                await ch.send(f"<@{target_id}> {msg}")
+                            except Exception:
+                                user = await bot.fetch_user(target_id)
+                                await user.send(msg)
+                        else:
+                            user = await bot.fetch_user(target_id)
+                            await user.send(msg)
+                    else:
+                        ch = bot.get_channel(target_id) or await bot.fetch_channel(target_id)
+                        await ch.send(msg)
+                    await bot.db.record_notification_target(target_type, target_id, deal_id)
+                except Exception as e:
+                    logger.exception("Failed to notify for popular deal %s to %s:%s: %s", deal_id, target_type, target_id, e)
+    except Exception:
+        logger.exception("Error in popular_deals_check")
+
+
 @bot.command(name="addkeyword")
 async def add_keyword(ctx, *, keyword: str):
     user_id = ctx.author.id
     await bot.db.add_subscription(user_id, keyword, target_type="user", target_id=user_id)
     await ctx.send(f"Added keyword '{keyword}' for {ctx.author.mention}")
+
+
+@bot.command(name="recentdeals")
+async def recent_deals(ctx, seconds: int = 3600, limit: int = 20):
+    """Return recent deals first seen within `seconds` (default 3600s)."""
+    rows = await bot.db.get_recent_deals(since_seconds=seconds, limit=limit)
+    if not rows:
+        await ctx.send(f"No deals found in the last {seconds} seconds.")
+        return
+    lines = []
+    for r in rows:
+        deal_id, title, url, first_seen_ts, upvotes, last_checked = r
+        lines.append(f"- {title} ({upvotes} upvotes) - {url}")
+    # send in chunks if too long
+    chunk = "\n".join(lines)
+    if len(chunk) < 1900:
+        await ctx.send(f"Recent deals:\n{chunk}")
+    else:
+        # send truncated to avoid hitting discord length limits
+        await ctx.send("Recent deals (truncated):\n" + chunk[:1800])
 
 
 @bot.command(name="addchannelkeyword")
@@ -236,10 +339,13 @@ async def list_keywords(ctx):
         kw = r[0]
         target_type = r[3]
         target_id = r[4]
+        display_kw = kw
+        if isinstance(kw, str) and kw.strip().lower() in ("*", "all"):
+            display_kw = f"{kw} (all matches)"
         if target_type == "channel":
-            lines.append(f"- {kw} (channel: {target_id})")
+            lines.append(f"- {display_kw} (channel: {target_id})")
         else:
-            lines.append(f"- {kw} (dm)")
+            lines.append(f"- {display_kw} (dm)")
     await ctx.send("Your keywords:\n" + "\n".join(lines))
 
 
