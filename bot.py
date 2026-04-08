@@ -4,6 +4,8 @@ import os
 
 import discord
 from rapidfuzz import fuzz
+import asyncio
+from aiohttp import web
 from discord.ext import commands, tasks
 
 from db import Database
@@ -25,6 +27,8 @@ BOT_TOKEN = os.environ.get("DISCORD_TOKEN") or config.get("discord_token")
 FEED_URL = config.get("rss_url")
 POLL_INTERVAL = config.get("poll_interval_seconds", 60)
 COOLDOWN = config.get("cooldown_seconds", 3600)
+NOTIFY_CHANNEL_ID = os.environ.get("NOTIFY_CHANNEL_ID") or config.get("notify_channel_id")
+WEB_PORT = int(os.environ.get("WEB_PORT") or config.get("web_port", 8000))
 
 
 intents = discord.Intents.default()
@@ -40,7 +44,68 @@ async def on_ready():
     await bot.db.init_db()
     if not poll_feed.is_running():
         poll_feed.start()
-    # health endpoint not used per configuration
+    # start HTTP test endpoint
+    bot.web_task = asyncio.create_task(start_web_server())
+
+
+async def start_web_server():
+    async def handle_test_notify(request: web.Request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+
+        # expected payload: {"user_ids": [123,...], "channel_id": 123, "content": "..."}
+        user_ids = data.get("user_ids") or []
+        if isinstance(user_ids, int):
+            user_ids = [user_ids]
+        content = data.get("content") or "Test notification"
+        channel_id = data.get("channel_id") or NOTIFY_CHANNEL_ID
+
+        # build mention prefix
+        mentions = "".join(f"<@{int(uid)}> " for uid in user_ids)
+        full_msg = f"{mentions}{content}"
+
+        # send to channel if provided, else DM each user
+        if channel_id:
+            try:
+                ch_id = int(channel_id)
+                ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
+                await ch.send(full_msg)
+                return web.json_response({"ok": True, "sent_to": f"channel:{ch_id}"})
+            except Exception as e:
+                # fallback to DM
+                for uid in user_ids:
+                    try:
+                        user = await bot.fetch_user(int(uid))
+                        await user.send(content)
+                    except Exception:
+                        pass
+                return web.json_response({"ok": True, "sent_to": "dm_fallback", "error": str(e)})
+
+        # no channel: DM each user
+        for uid in user_ids:
+            try:
+                user = await bot.fetch_user(int(uid))
+                await user.send(content)
+            except Exception:
+                pass
+        return web.json_response({"ok": True, "sent_to": "dms"})
+
+    app = web.Application()
+    app.router.add_post('/test_notify', handle_test_notify)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', WEB_PORT)
+    await site.start()
+    logger.info(f"Test HTTP server running on port {WEB_PORT}")
+    # keep running
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        await runner.cleanup()
+        raise
 
 
 @tasks.loop(seconds=POLL_INTERVAL)
@@ -101,8 +166,19 @@ async def poll_feed():
                         msg += f"Upvotes: {upvotes}\n"
                     msg += f"Matched keyword: `{keyword}`"
                     if target_type == "user":
-                        user = await bot.fetch_user(target_id)
-                        await user.send(msg)
+                        # If NOTIFY_CHANNEL_ID is configured, send into that channel and mention the user
+                        if NOTIFY_CHANNEL_ID:
+                            try:
+                                ch_id = int(NOTIFY_CHANNEL_ID)
+                                ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
+                                await ch.send(f"<@{target_id}> {msg}")
+                            except Exception:
+                                # fallback to DM if channel send fails
+                                user = await bot.fetch_user(target_id)
+                                await user.send(msg)
+                        else:
+                            user = await bot.fetch_user(target_id)
+                            await user.send(msg)
                     else:
                         ch = bot.get_channel(target_id) or await bot.fetch_channel(target_id)
                         await ch.send(msg)

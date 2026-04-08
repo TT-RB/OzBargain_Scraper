@@ -20,6 +20,8 @@ services:
       DATABASE_URL: postgres://ozbot:ozbotpass@db:5432/ozbargain
     volumes:
       - ./:/app
+    ports:
+      - "8000:8000"
     restart: on-failure
 
 volumes:
