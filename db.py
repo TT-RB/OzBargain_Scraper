@@ -121,15 +121,18 @@ class Database:
         )
 
     async def can_notify_target(self, target_type: str, target_id: int, deal_id: str, cooldown_seconds: int) -> bool:
-        now = int(time.time())
-        cur = await self.db.fetch_one("SELECT 1 FROM notified2 WHERE target_type = :target_type AND target_id = :target_id AND deal_id = :deal_id", values={"target_type": target_type, "target_id": target_id, "deal_id": deal_id})
+        cur = await self.db.fetch_one(
+            "SELECT 1 FROM notified2 WHERE target_type = :target_type AND target_id = :target_id AND deal_id = :deal_id",
+            values={
+                "target_type": target_type,
+                "target_id": target_id,
+                "deal_id": deal_id
+            }
+        )
+
         if cur:
             return False
-        row = await self.db.fetch_one("SELECT ts FROM last_notified2 WHERE target_type = :target_type AND target_id = :target_id", values={"target_type": target_type, "target_id": target_id})
-        if row:
-            last_ts = row[0]
-            if now - last_ts < cooldown_seconds:
-                return False
+
         return True
 
     async def mark_seen(self, deal_id: str):
