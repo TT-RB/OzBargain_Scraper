@@ -45,6 +45,10 @@ async def on_ready():
     if not poll_feed.is_running():
         poll_feed.start()
     # start the popular checker if it's defined in this module
+    # Start the maintenance loop
+    if not maintenance_task.is_running():
+        maintenance_task.start()
+        logger.info("Database maintenance loop started (72h interval).")
     try:
         if not popular_deals_check.is_running():
             popular_deals_check.start()
@@ -115,6 +119,15 @@ async def start_web_server():
         await runner.cleanup()
         raise
 
+@tasks.loop(hours=72)
+async def maintenance_task():
+    """Background task to keep Postgres lean."""
+    logger.info("Starting 3-day database maintenance...")
+    try:
+        # We keep 3 days of history as requested
+        await bot.db.clear_old_data(days_to_keep=3)
+    except Exception as e:
+        logger.error(f"Maintenance task failed: {e}")
 
 @tasks.loop(seconds=POLL_INTERVAL)
 async def poll_feed():

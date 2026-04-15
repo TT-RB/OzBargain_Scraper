@@ -198,3 +198,31 @@ class Database:
         cur = await self.db.fetch_one("SELECT 1 FROM seen WHERE deal_id = :deal_id", values={"deal_id": deal_id})
         return cur is not None
 
+    async def clear_old_data(self, days_to_keep: int = 3):
+        """
+        Deletes records older than the retention period and updates Postgres statistics.
+        """
+        # 1. Calculate the cutoff (3 days ago)
+        cutoff_ts = int(time.time()) - (days_to_keep * 86400)
+        
+        # 2. Define the tables to prune
+        # Using a transaction ensures that if one fails, the DB stays consistent
+        async with self.db.transaction():
+            queries = [
+                "DELETE FROM deals WHERE last_checked_ts < :cutoff",
+                "DELETE FROM seen WHERE ts < :cutoff",
+                "DELETE FROM notified2 WHERE ts < :cutoff",
+                "DELETE FROM last_notified2 WHERE ts < :cutoff"
+            ]
+            
+            for query in queries:
+                await self.db.execute(query, values={"cutoff": cutoff_ts})
+
+        # 3. Update Statistics
+        # In Postgres, 'ANALYZE' tells the database to recount the rows.
+        # This helps the query planner stay efficient after a mass deletion.
+        await self.db.execute("ANALYZE deals")
+        await self.db.execute("ANALYZE seen")
+        await self.db.execute("ANALYZE notified2")
+
+        print(f"Postgres maintenance complete. Data older than {days_to_keep} days pruned.")
