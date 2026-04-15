@@ -4,4 +4,3 @@ rapidfuzz
 databases[postgresql]
 asyncpg
 aiohttp
-

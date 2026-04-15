@@ -137,18 +137,7 @@ async def poll_feed():
             link = entry.get("link")
             summary = entry.get("summary", "")
 
-            # ✅ FIX 1: get upvotes directly from feed (no scraping)
-            upvotes = (
-                entry.get("ozb:vote-pos")
-                or entry.get("vote-pos")
-                or entry.get("votes")
-                or 0
-            )
-
-            try:
-                upvotes = int(upvotes)
-            except Exception:
-                upvotes = 0
+            upvotes = entry.get("upvotes", 0)
 
             # record deal metadata/upvotes
             try:
@@ -198,20 +187,9 @@ async def poll_feed():
                     msg += f"Matched keyword: `{keyword}`"
 
                     if target_type == "user":
-                        if NOTIFY_CHANNEL_ID:
-                            try:
-                                ch_id = int(NOTIFY_CHANNEL_ID)
-                                ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
-                                await ch.send(f"<@{target_id}> {msg}")
-                                logger.info(f"Sent notification to channel {NOTIFY_CHANNEL_ID} mentioning user {target_id} for deal {entry_id}")
-                            except Exception:
-                                user = await bot.fetch_user(target_id)
-                                await user.send(msg)
-                                logger.info(f"Sent DM to user {target_id} for deal {entry_id}")
-                        else:
-                            user = await bot.fetch_user(target_id)
-                            await user.send(msg)
-                            logger.info(f"Sent DM to user {target_id} for deal {entry_id}")
+                        user = await bot.fetch_user(target_id)
+                        await user.send(msg)
+                        logger.info(f"Sent DM to user {target_id} for deal {entry_id}")
                     else:
                         ch = bot.get_channel(target_id) or await bot.fetch_channel(target_id)
                         await ch.send(msg)
@@ -273,14 +251,9 @@ async def popular_deals_check():
                     )
 
                     if target_type == "user":
-                        if NOTIFY_CHANNEL_ID:
-                            ch = bot.get_channel(int(NOTIFY_CHANNEL_ID)) or await bot.fetch_channel(int(NOTIFY_CHANNEL_ID))
-                            await ch.send(f"<@{target_id}> {msg}")
-                            logger.info(f"Sent popular deal notification to channel {NOTIFY_CHANNEL_ID} mentioning user {target_id} for deal {deal_id}")
-                        else:
-                            user = await bot.fetch_user(target_id)
-                            await user.send(msg)
-                            logger.info(f"Sent popular deal DM to user {target_id} for deal {deal_id}") 
+                        user = await bot.fetch_user(target_id)
+                        await user.send(msg)
+                        logger.info(f"Sent popular deal DM to user {target_id} for deal {deal_id}")
                     else:
                         ch = bot.get_channel(target_id) or await bot.fetch_channel(target_id)
                         await ch.send(msg)
