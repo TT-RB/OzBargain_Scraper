@@ -33,7 +33,7 @@ WEB_PORT = int(os.environ.get("WEB_PORT") or config.get("web_port", 8000))
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 
 @bot.event
