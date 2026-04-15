@@ -91,6 +91,17 @@ class Database:
         cur = await self.db.fetch_one("SELECT 1 FROM subscriptions WHERE owner_id = :owner_id AND keyword = :keyword AND target_type = :target_type AND target_id = :target_id", values={"owner_id": owner_id, "keyword": keyword, "target_type": target_type, "target_id": target_id})
         return cur is None
 
+    async def remove_all_subscriptions(self, owner_id: int):
+        await self.db.execute(
+            """
+            DELETE FROM subscriptions
+            WHERE owner_id = :owner_id
+            AND target_type = 'user'
+            AND target_id = :owner_id
+            """,
+            values={"owner_id": owner_id}
+        )
+
     async def list_subscriptions(self, owner_id: int):
         query = "SELECT keyword, fuzzy, threshold, target_type, target_id FROM subscriptions WHERE owner_id = :owner_id"
         rows = await self.db.fetch_all(query, values={"owner_id": owner_id})

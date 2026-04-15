@@ -316,6 +316,11 @@ async def remove_keyword(ctx, *, keyword: str):
     else:
         await ctx.send(f"Keyword '{keyword}' not found")
 
+@bot.command(name="removeallkeywords")
+async def remove_all_keywords(ctx):
+    user_id = ctx.author.id
+    await bot.db.remove_all_subscriptions(user_id)
+    await ctx.send("Removed all your keywords.")
 
 @bot.command(name="removechannelkeyword")
 async def remove_channel_keyword(ctx, *, keyword: str):
@@ -347,6 +352,20 @@ async def list_keywords(ctx):
         else:
             lines.append(f"- {display_kw} (dm)")
     await ctx.send("Your keywords:\n" + "\n".join(lines))
+
+@bot.command(name="help", aliases=["commands"])
+async def help_command(ctx):
+    msg = (
+        "**OzBargain Bot Commands**\n\n"
+        "`!addkeyword <keyword>` — get DMs when a deal matches your keyword\n"
+        "`!removekeyword <keyword>` — remove a keyword\n"
+        "`!removeallkeywords` — remove all your keywords\n"
+        "`!listkeywords` — list all your keywords\n\n"
+        "`!addchannelkeyword <keyword>` — post to this channel when a deal matches\n"
+        "`!removechannelkeyword <keyword>` — remove a channel keyword\n\n"
+        "`!recentdeals [seconds] [limit]` — list recent deals (default: last 3600s, up to 20)\n"
+    )
+    await ctx.send(msg)
 
 
 if __name__ == "__main__":
