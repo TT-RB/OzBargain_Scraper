@@ -393,6 +393,8 @@ async def help_command(ctx):
         "`!addchannelkeyword <keyword>` — post to this channel when a deal matches\n"
         "`!removechannelkeyword <keyword>` — remove a channel keyword\n\n"
         "`!recentdeals [seconds] [limit]` — list recent deals (default: last 3600s, up to 20)\n"
+        "`!subscribe_popular` — subscribe to popular deal alerts (e.g., 50+ upvotes)\n"
+        "`!unsubscribe_popular` — unsubscribe from popular deal alerts\n"
     )
     await ctx.send(msg)
 
