@@ -226,3 +226,8 @@ class Database:
         await self.db.execute("ANALYZE notified2")
 
         print(f"Postgres maintenance complete. Data older than {days_to_keep} days pruned.")
+
+    async def get_popular_subscribers(self):
+        return await self.db.fetch_all(
+        "SELECT owner_id, target_type, target_id FROM subscriptions WHERE keyword = '__popular__'"
+    )

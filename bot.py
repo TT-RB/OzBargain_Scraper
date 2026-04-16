@@ -234,20 +234,14 @@ async def popular_deals_check():
         if not deals:
             return
 
-        subs = await bot.db.get_all_subscriptions()
+        subs = await bot.db.get_popular_subscribers()
         seen_targets = set()
 
         for deal in deals:
             deal_id, title, url, first_seen_ts, last_upvotes, last_checked_ts = deal
 
             for row in subs:
-                target_type = row[4] or "user"
-                target_id = row[5] or row[0]
-
-                key = (target_type, target_id)
-                if key in seen_targets:
-                    continue
-                seen_targets.add(key)
+                owner_id, target_type, target_id = row
 
                 can = await bot.db.can_notify_target(
                     target_type, target_id, deal_id, COOLDOWN
@@ -365,6 +359,28 @@ async def list_keywords(ctx):
         else:
             lines.append(f"- {display_kw} (dm)")
     await ctx.send("Your keywords:\n" + "\n".join(lines))
+
+@bot.command(name="subscribe_popular")
+async def subscribe_popular(ctx):
+    user_id = ctx.author.id
+    await bot.db.add_subscription(
+        user_id,
+        "__popular__",
+        target_type="user",
+        target_id=user_id
+    )
+    await ctx.send("✅ Subscribed to popular deal alerts!")
+
+@bot.command(name="unsubscribe_popular")
+async def unsubscribe_popular(ctx):
+    user_id = ctx.author.id
+    await bot.db.remove_subscription(
+        user_id,
+        "__popular__",
+        target_type="user",
+        target_id=user_id
+    )
+    await ctx.send("❌ Unsubscribed from popular deal alerts.")
 
 @bot.command(name="help", aliases=["commands"])
 async def help_command(ctx):
