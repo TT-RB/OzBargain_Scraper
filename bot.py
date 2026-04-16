@@ -280,14 +280,14 @@ async def popular_deals_check():
         logger.exception("Error in popular_deals_check")
 
 
-@bot.command(name="addkeyword")
+@bot.command(name="add_keyword")
 async def add_keyword(ctx, *, keyword: str):
     user_id = ctx.author.id
     await bot.db.add_subscription(user_id, keyword, target_type="user", target_id=user_id)
     await ctx.send(f"Added keyword '{keyword}' for {ctx.author.mention}")
 
 
-@bot.command(name="recentdeals")
+@bot.command(name="recent_deals")
 async def recent_deals(ctx, seconds: int = 3600, limit: int = 20):
     """Return recent deals first seen within `seconds` (default 3600s)."""
     rows = await bot.db.get_recent_deals(since_seconds=seconds, limit=limit)
@@ -307,14 +307,14 @@ async def recent_deals(ctx, seconds: int = 3600, limit: int = 20):
         await ctx.send("Recent deals (truncated):\n" + chunk[:1800])
 
 
-@bot.command(name="addchannelkeyword")
+@bot.command(name="add_channel_keyword")
 async def add_channel_keyword(ctx, *, keyword: str):
     owner_id = ctx.author.id
     await bot.db.add_subscription(owner_id, keyword, target_type="channel", target_id=ctx.channel.id)
     await ctx.send(f"Added channel keyword '{keyword}' for this channel")
 
 
-@bot.command(name="removekeyword")
+@bot.command(name="remove_keyword")
 async def remove_keyword(ctx, *, keyword: str):
     user_id = ctx.author.id
     removed = await bot.db.remove_subscription(user_id, keyword, target_type="user", target_id=user_id)
@@ -323,13 +323,13 @@ async def remove_keyword(ctx, *, keyword: str):
     else:
         await ctx.send(f"Keyword '{keyword}' not found")
 
-@bot.command(name="removeallkeywords")
+@bot.command(name="remove_all_keywords")
 async def remove_all_keywords(ctx):
     user_id = ctx.author.id
     await bot.db.remove_all_subscriptions(user_id)
     await ctx.send("Removed all your keywords.")
 
-@bot.command(name="removechannelkeyword")
+@bot.command(name="remove_channel_keyword")
 async def remove_channel_keyword(ctx, *, keyword: str):
     owner_id = ctx.author.id
     removed = await bot.db.remove_subscription(owner_id, keyword, target_type="channel", target_id=ctx.channel.id)
@@ -339,7 +339,7 @@ async def remove_channel_keyword(ctx, *, keyword: str):
         await ctx.send(f"Channel keyword '{keyword}' not found")
 
 
-@bot.command(name="listkeywords")
+@bot.command(name="list_keywords")
 async def list_keywords(ctx):
     user_id = ctx.author.id
     rows = await bot.db.list_subscriptions(user_id)
@@ -386,13 +386,13 @@ async def unsubscribe_popular(ctx):
 async def help_command(ctx):
     msg = (
         "**OzBargain Bot Commands**\n\n"
-        "`!addkeyword <keyword>` — get DMs when a deal matches your keyword\n"
-        "`!removekeyword <keyword>` — remove a keyword\n"
-        "`!removeallkeywords` — remove all your keywords\n"
-        "`!listkeywords` — list all your keywords\n\n"
-        "`!addchannelkeyword <keyword>` — post to this channel when a deal matches\n"
-        "`!removechannelkeyword <keyword>` — remove a channel keyword\n\n"
-        "`!recentdeals [seconds] [limit]` — list recent deals (default: last 3600s, up to 20)\n"
+        "`!add_keyword <keyword>` — get DMs when a deal matches your keyword\n"
+        "`!remove_keyword <keyword>` — remove a keyword\n"
+        "`!remove_all_keywords` — remove all your keywords\n"
+        "`!list_keywords` — list all your keywords\n\n"
+        "`!add_channel_keyword <keyword>` — post to this channel when a deal matches\n"
+        "`!remove_channel_keyword <keyword>` — remove a channel keyword\n\n"
+        "`!recent_deals [seconds] [limit]` — list recent deals (default: last 3600s, up to 20)\n"
         "`!subscribe_popular` — subscribe to popular deal alerts (e.g., 50+ upvotes)\n"
         "`!unsubscribe_popular` — unsubscribe from popular deal alerts\n"
     )
